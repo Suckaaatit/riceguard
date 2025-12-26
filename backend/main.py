@@ -21,7 +21,7 @@ app.add_middleware(
 
 ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY")
 ROBOFLOW_MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID", "detect-and-classify")
-ROBOFLOW_WORKSPACE = os.getenv("ROBOFLOW_WORKSPACE", "your-workspace")  # User needs to set this
+ROBOFLOW_WORKSPACE = os.getenv("ROBOFLOW_WORKSPACE", "ricefrain")  # User's workspace from Roboflow URL
 ROBOFLOW_SERVERLESS_URL = f"https://serverless.roboflow.com/{ROBOFLOW_WORKSPACE}/workflows"
 session = requests.Session()
 
@@ -89,8 +89,8 @@ def draw_boxes(img: np.ndarray, detections):
 def roboflow_infer(image_bytes: bytes, w: int, h: int):
     if not ROBOFLOW_API_KEY:
         raise HTTPException(status_code=503, detail="Roboflow API key missing")
-    if not ROBOFLOW_WORKFLOW_ID or ROBOFLOW_WORKFLOW_ID == "your-workspace":
-        raise HTTPException(status_code=503, detail="Roboflow workspace or workflow ID missing")
+    if not ROBOFLOW_WORKFLOW_ID or ROBOFLOW_WORKSPACE == "ricefrain" and ROBOFLOW_WORKFLOW_ID == "detect-and-classify":
+        raise HTTPException(status_code=503, detail="Roboflow workflow ID missing - set ROBOFLOW_MODEL_ID to your workflow ID")
 
     resized = resize_image_for_roboflow(image_bytes)
     encoded = base64.b64encode(resized).decode()
@@ -182,7 +182,7 @@ async def analyze(file: UploadFile = File(...)):
 def health():
     return {
         "roboflow_configured": bool(ROBOFLOW_API_KEY),
-        "workspace_configured": ROBOFLOW_WORKSPACE != "your-workspace",
+        "workspace_configured": ROBOFLOW_WORKSPACE == "ricefrain",
         "workflow_id": ROBOFLOW_WORKFLOW_ID
     }
 
