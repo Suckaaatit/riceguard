@@ -21,7 +21,8 @@ app.add_middleware(
 
 ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY")
 ROBOFLOW_MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID", "detect-and-classify")
-ROBOFLOW_SERVERLESS_URL = "https://serverless.roboflow.com/infer"
+ROBOFLOW_WORKSPACE = os.getenv("ROBOFLOW_WORKSPACE", "your-workspace")  # User needs to set this
+ROBOFLOW_SERVERLESS_URL = f"https://serverless.roboflow.com/{ROBOFLOW_WORKSPACE}/workflows"
 session = requests.Session()
 
 def _normalize_workflow_id(value: str) -> str:
@@ -88,16 +89,21 @@ def draw_boxes(img: np.ndarray, detections):
 def roboflow_infer(image_bytes: bytes, w: int, h: int):
     if not ROBOFLOW_API_KEY:
         raise HTTPException(status_code=503, detail="Roboflow API key missing")
+    if not ROBOFLOW_WORKFLOW_ID or ROBOFLOW_WORKFLOW_ID == "your-workspace":
+        raise HTTPException(status_code=503, detail="Roboflow workspace or workflow ID missing")
 
     resized = resize_image_for_roboflow(image_bytes)
     encoded = base64.b64encode(resized).decode()
 
+    workflow_url = f"{ROBOFLOW_SERVERLESS_URL}/{ROBOFLOW_WORKFLOW_ID}"
+    
     response = session.post(
-        ROBOFLOW_SERVERLESS_URL,
+        workflow_url,
         json={
             "api_key": ROBOFLOW_API_KEY,
-            "workflow_id": ROBOFLOW_WORKFLOW_ID,
-            "image": encoded,
+            "inputs": {
+                "image": encoded
+            }
         },
         timeout=90,
     )
@@ -109,7 +115,15 @@ def roboflow_infer(image_bytes: bytes, w: int, h: int):
         )
 
     result = response.json()
-    predictions = result.get("predictions", [])
+    
+    # Serverless workflow API returns outputs array
+    outputs = result.get("outputs", [])
+    if not outputs:
+        predictions = []
+    else:
+        # Get predictions from the first output
+        first_output = outputs[0]
+        predictions = first_output.get("predictions", [])
 
     detections = []
     counts = {"whole_grain": 0, "broken_grain": 0}
@@ -166,7 +180,11 @@ async def analyze(file: UploadFile = File(...)):
 
 @app.get("/health")
 def health():
-    return {"roboflow_configured": bool(ROBOFLOW_API_KEY)}
+    return {
+        "roboflow_configured": bool(ROBOFLOW_API_KEY),
+        "workspace_configured": ROBOFLOW_WORKSPACE != "your-workspace",
+        "workflow_id": ROBOFLOW_WORKFLOW_ID
+    }
 
 frontend_path = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 if frontend_path.exists():
