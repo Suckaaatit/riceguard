@@ -5,6 +5,7 @@ from pydantic import BaseModel
 import cv2
 import numpy as np
 import base64
+import json
 import requests
 import os
 from pathlib import Path
@@ -22,6 +23,29 @@ ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY")
 ROBOFLOW_MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID", "detect-and-classify")
 ROBOFLOW_SERVERLESS_URL = "https://serverless.roboflow.com/infer"
 session = requests.Session()
+
+def _normalize_workflow_id(value: str) -> str:
+    v = (value or "").strip()
+    if not v:
+        return v
+
+    if "/" in v:
+        v = v.rstrip("/").split("/")[-1]
+
+    if v.count(".") >= 2:
+        try:
+            payload_b64 = v.split(".")[1]
+            payload_b64 += "=" * (-len(payload_b64) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(payload_b64).decode("utf-8"))
+            workflow_id = payload.get("workflowId")
+            if isinstance(workflow_id, str) and workflow_id.strip():
+                return workflow_id.strip()
+        except Exception:
+            return v
+
+    return v
+
+ROBOFLOW_WORKFLOW_ID = _normalize_workflow_id(ROBOFLOW_MODEL_ID)
 
 class AnalysisResult(BaseModel):
     total_grains: int
@@ -72,7 +96,7 @@ def roboflow_infer(image_bytes: bytes, w: int, h: int):
         ROBOFLOW_SERVERLESS_URL,
         json={
             "api_key": ROBOFLOW_API_KEY,
-            "workflow_id": ROBOFLOW_MODEL_ID,
+            "workflow_id": ROBOFLOW_WORKFLOW_ID,
             "image": encoded,
         },
         timeout=90,
