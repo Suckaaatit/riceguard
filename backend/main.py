@@ -19,8 +19,8 @@ app.add_middleware(
 )
 
 ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY")
-ROBOFLOW_MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID", "rice-dataset-mjw6b-yby29/2")
-ROBOFLOW_DETECT_BASE_URL = "https://detect.roboflow.com"
+ROBOFLOW_MODEL_ID = os.getenv("ROBOFLOW_MODEL_ID", "detect-and-classify")
+ROBOFLOW_SERVERLESS_URL = "https://serverless.roboflow.com/infer"
 session = requests.Session()
 
 class AnalysisResult(BaseModel):
@@ -69,35 +69,23 @@ def roboflow_infer(image_bytes: bytes, w: int, h: int):
     encoded = base64.b64encode(resized).decode()
 
     response = session.post(
-        f"{ROBOFLOW_DETECT_BASE_URL}/{ROBOFLOW_MODEL_ID}",
-        params={"api_key": ROBOFLOW_API_KEY},
-        data=encoded,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        timeout=60,
+        ROBOFLOW_SERVERLESS_URL,
+        json={
+            "api_key": ROBOFLOW_API_KEY,
+            "workflow_id": ROBOFLOW_MODEL_ID,
+            "image": encoded,
+        },
+        timeout=90,
     )
 
     if not response.ok:
         raise HTTPException(
             status_code=502,
-            detail=f"Roboflow error {response.status_code}: {(response.text or '')[:200]}",
+            detail=f"Roboflow failed ({response.status_code}): {response.text[:300]}"
         )
 
-    predictions = response.json().get("predictions", [])
-
-    broken_scores, whole_scores = [], []
-    for p in predictions:
-        cls = p.get("class")
-        conf = float(p.get("confidence", 0.0))
-        if cls in ("broken", "broken_grain"):
-            broken_scores.append(conf)
-        elif cls in ("whole", "whole_grain", "full"):
-            whole_scores.append(conf)
-
-    avg_broken = np.mean(broken_scores) if broken_scores else 0.0
-    avg_whole = np.mean(whole_scores) if whole_scores else 0.0
-
-    broken_min = avg_broken * 0.75
-    whole_min = avg_whole * 0.75
+    result = response.json()
+    predictions = result.get("predictions", [])
 
     detections = []
     counts = {"whole_grain": 0, "broken_grain": 0}
@@ -107,32 +95,21 @@ def roboflow_infer(image_bytes: bytes, w: int, h: int):
         cls = p.get("class")
         conf = float(p.get("confidence", 0.0))
 
-        if cls in ("broken", "broken_grain"):
-            if conf < broken_min:
-                continue
-            cls = "broken_grain"
-        elif cls in ("whole", "whole_grain", "full"):
-            if conf < whole_min:
-                continue
-            cls = "whole_grain"
-        else:
+        if cls not in counts:
             continue
 
-        x, y = float(p["x"]), float(p["y"])
-        bw, bh = float(p["width"]), float(p["height"])
+        x, y, bw, bh = map(float, (p["x"], p["y"], p["width"], p["height"]))
 
-        detections.append(
-            {
-                "class": cls,
-                "confidence": round(conf, 3),
-                "bbox": [
-                    max(0, x - bw / 2),
-                    max(0, y - bh / 2),
-                    min(w, x + bw / 2),
-                    min(h, y + bh / 2),
-                ],
-            }
-        )
+        detections.append({
+            "class": cls,
+            "confidence": round(conf, 3),
+            "bbox": [
+                max(0, x - bw / 2),
+                max(0, y - bh / 2),
+                min(w, x + bw / 2),
+                min(h, y + bh / 2),
+            ],
+        })
 
         counts[cls] += 1
         confs.append(conf)
@@ -142,7 +119,8 @@ def roboflow_infer(image_bytes: bytes, w: int, h: int):
 @app.post("/analyze", response_model=AnalysisResult)
 async def analyze(file: UploadFile = File(...)):
     image_bytes = await file.read()
-    rgb = decode_image(image_bytes)
+    resized = resize_image_for_roboflow(image_bytes)
+    rgb = decode_image(resized)
     h, w = rgb.shape[:2]
 
     detections, counts, avg_conf = roboflow_infer(image_bytes, w, h)
